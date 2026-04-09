@@ -23,7 +23,11 @@ app.get('/run', async (req, res) => {
   }
 
   try {
-    const out = await executeCheck();
+    const verbose =
+      req.query.verbose === '1' ||
+      req.query.verbose === 'true' ||
+      req.header('x-verbose') === '1';
+    const out = await executeCheck({ verbose });
     const status = out.ok ? 200 : 502;
     res.status(status).json(out);
   } catch (e) {

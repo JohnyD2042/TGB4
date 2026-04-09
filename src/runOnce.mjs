@@ -3,7 +3,11 @@ import { runConsulta } from './consulta.mjs';
 import { sendTelegram } from './notify.mjs';
 import { readLastFingerprint, writeLastFingerprint } from './state.mjs';
 
-export async function executeCheck() {
+/**
+ * @param {{ verbose?: boolean }} opts – verbose=true devuelve result completo (debug)
+ */
+export async function executeCheck(opts = {}) {
+  const verbose = Boolean(opts.verbose);
   const cfg = loadConfig();
   const missing = validateConsultaConfig(cfg);
   if (missing.length) {
@@ -21,7 +25,12 @@ export async function executeCheck() {
   });
 
   if (!result.ok) {
-    return { ok: false, error: result.error, notified: false, result };
+    return {
+      ok: false,
+      error: result.error,
+      notified: false,
+      ...(verbose ? { result } : {}),
+    };
   }
 
   const fp = result.block?.fingerprint || '';
@@ -41,29 +50,50 @@ export async function executeCheck() {
     notified = true;
   }
 
+  const u = result.block?.ultimoMovimiento;
+  const fecha = u?.fecha ?? '';
+  const estado = u?.codigo ?? '';
+  const texto = fecha && estado ? `${fecha} — ${estado}` : '';
+
+  if (verbose) {
+    return {
+      ok: true,
+      changed,
+      notified,
+      fecha,
+      estado,
+      texto,
+      fingerprint: fp,
+      resumen: result.block?.resumen ?? '',
+      ultimoMovimiento: u ?? null,
+      lines: result.block?.lines ?? [],
+      result,
+    };
+  }
+
   return {
     ok: true,
     changed,
     notified,
-    resumen: result.block?.resumen ?? '',
-    ultimoMovimiento: result.block?.ultimoMovimiento ?? null,
-    fingerprint: fp,
-    lines: result.block?.lines ?? [],
-    result,
+    fecha,
+    estado,
+    texto,
   };
 }
 
 function formatMessage(cfg, result) {
-  const block = result.block;
-  const core = block?.resumen
-    ? block.resumen
-    : block?.lines?.length
-      ? block.lines.join('\n')
-      : block?.fullTextSample || result.rawSnippet;
+  const u = result.block?.ultimoMovimiento;
+  const line =
+    u && u.fecha && u.codigo
+      ? `${u.fecha} — ${u.codigo}`
+      : result.block?.resumen ||
+        (result.block?.lines?.length ? result.block.lines.join('\n') : '') ||
+        result.block?.fullTextSample ||
+        result.rawSnippet;
   return [
     'Migraciones — consulta automática',
     `Expediente: ${cfg.expediente}`,
     '---',
-    core,
+    line,
   ].join('\n');
 }
