@@ -1,0 +1,7 @@
+node_modules
+data
+.git
+.env
+config.local.json
+*.md
+.DS_Store
