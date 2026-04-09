@@ -3,14 +3,40 @@ import { chromium } from 'playwright';
 const NAV_TIMEOUT_MS = 90_000;
 
 /**
- * Evita <input type="hidden" id="info_fecha_nacimiento"> que matcheaba name*=fecha.
+ * Migraciones: bloque #fecha_nac es un <div> con tres <input> (día, mes, año); no usar fill en el div.
+ * Evita <input type="hidden" id="info_fecha_nacimiento">.
  * @param {import('playwright').Page} page
  * @param {string} fechaNacimiento DD/MM/YYYY
  */
 async function fillFechaNacimiento(page, fechaNacimiento) {
-  const byId = page.locator('#fecha_nacimiento:not([type="hidden"])');
-  if (await byId.count()) {
-    await byId.first().fill(fechaNacimiento, { timeout: 15_000 });
+  const parsed = fechaNacimiento.trim().match(/^(\d{1,2})[/.-\s](\d{1,2})[/.-\s](\d{4})$/);
+  if (!parsed) {
+    throw new Error('FECHA_NACIMIENTO debe ser DD/MM/YYYY');
+  }
+  const [, dd, mm, yyyy] = parsed;
+  const ddStr = dd.padStart(2, '0');
+  const mmStr = mm.padStart(2, '0');
+
+  async function fillThreeInOrder(scope) {
+    const inputs = scope.locator('input:not([type="hidden"])');
+    const n = await inputs.count();
+    if (n >= 3) {
+      await inputs.nth(0).fill(ddStr, { timeout: 15_000 });
+      await inputs.nth(1).fill(mmStr, { timeout: 15_000 });
+      await inputs.nth(2).fill(yyyy, { timeout: 15_000 });
+      return true;
+    }
+    return false;
+  }
+
+  const rowFechaNac = page.locator('#fecha_nac');
+  if (await rowFechaNac.count()) {
+    if (await fillThreeInOrder(rowFechaNac.first())) return;
+  }
+
+  const singleInput = page.locator('input#fecha_nacimiento:not([type="hidden"])');
+  if (await singleInput.count()) {
+    await singleInput.first().fill(fechaNacimiento, { timeout: 15_000 });
     return;
   }
 
@@ -18,27 +44,29 @@ async function fillFechaNacimiento(page, fechaNacimiento) {
     'input:not([type="hidden"])[name*="fecha" i]:not(#info_fecha_nacimiento)',
   );
   const nameCount = await byName.count();
-  if (nameCount > 0) {
+  if (nameCount === 1) {
     await byName.first().fill(fechaNacimiento, { timeout: 15_000 });
     return;
   }
+  if (nameCount >= 3) {
+    await byName.nth(0).fill(ddStr, { timeout: 15_000 });
+    await byName.nth(1).fill(mmStr, { timeout: 15_000 });
+    await byName.nth(2).fill(yyyy, { timeout: 15_000 });
+    return;
+  }
 
-  const parsed = fechaNacimiento.trim().match(/^(\d{1,2})[/.-\s](\d{1,2})[/.-\s](\d{4})$/);
-  if (parsed) {
-    const [, dd, mm, yyyy] = parsed;
-    const dia = page.locator('input[name*="dia" i]:not([type="hidden"])').first();
-    const mes = page.locator('input[name*="mes" i]:not([type="hidden"])').first();
-    const anio = page
-      .locator(
-        'input[name*="anio" i]:not([type="hidden"]), input[name*="año" i]:not([type="hidden"])',
-      )
-      .first();
-    if ((await dia.count()) && (await mes.count()) && (await anio.count())) {
-      await dia.fill(dd.padStart(2, '0'), { timeout: 15_000 });
-      await mes.fill(mm.padStart(2, '0'), { timeout: 15_000 });
-      await anio.fill(yyyy, { timeout: 15_000 });
-      return;
-    }
+  const dia = page.locator('input[name*="dia" i]:not([type="hidden"])').first();
+  const mes = page.locator('input[name*="mes" i]:not([type="hidden"])').first();
+  const anio = page
+    .locator(
+      'input[name*="anio" i]:not([type="hidden"]), input[name*="año" i]:not([type="hidden"])',
+    )
+    .first();
+  if ((await dia.count()) && (await mes.count()) && (await anio.count())) {
+    await dia.fill(ddStr, { timeout: 15_000 });
+    await mes.fill(mmStr, { timeout: 15_000 });
+    await anio.fill(yyyy, { timeout: 15_000 });
+    return;
   }
 
   const fechaLabel = page.locator('label').filter({ hasText: /fecha\s+nacimiento/i }).first();
@@ -46,15 +74,22 @@ async function fillFechaNacimiento(page, fechaNacimiento) {
     const fid = await fechaLabel.getAttribute('for');
     if (fid && /^[a-zA-Z_][\w.-]*$/.test(fid) && !/info_fecha/i.test(fid)) {
       const byFor = page.locator(`#${fid}`);
-      if ((await byFor.count()) && (await byFor.getAttribute('type')) !== 'hidden') {
-        await byFor.fill(fechaNacimiento, { timeout: 15_000 });
-        return;
+      if (await byFor.count()) {
+        const tag = (await byFor.first().evaluate((el) => el.tagName)).toLowerCase();
+        if (tag === 'input' || tag === 'textarea') {
+          const t = await byFor.first().getAttribute('type');
+          if (t !== 'hidden') {
+            await byFor.first().fill(fechaNacimiento, { timeout: 15_000 });
+            return;
+          }
+        }
+        if (await fillThreeInOrder(byFor.first())) return;
       }
     }
   }
 
   throw new Error(
-    'No se encontró un campo visible para fecha de nacimiento (evitando info_fecha_nacimiento hidden).',
+    'No se encontraron tres campos de fecha de nacimiento (día/mes/año) visibles.',
   );
 }
 
