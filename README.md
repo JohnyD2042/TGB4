@@ -17,11 +17,34 @@ npm run check
 
 Без `config.local.json` можно задать переменные окружения: `EXPEDIENTE`, `FECHA_NACIMIENTO`, при необходимости `CONSULTA_URL`.
 
+## Пошагово: залить код на GitHub (первый раз)
+
+Файл `config.local.json` с вашими данными **не попадает в Git** (он в `.gitignore`). В GitHub уедет только код; **секреты потом внесите в Railway Variables**.
+
+1. Зайдите на [github.com/new](https://github.com/new).
+2. **Repository name:** например `migraciones-consulta-bot`.
+3. Выберите **Private** (рекомендуется) или Public.
+4. **Снимите** галочки «Add a README» и «Add .gitignore» — репозиторий должен быть **пустым**.
+5. Нажмите **Create repository**.
+6. На странице подсказки выберите **…or push an existing repository** и выполните **на своём Mac** в терминале (папка проекта `TGB4`), подставив свой логин и имя репозитория:
+
+```bash
+cd "/Users/ivanklykov/Desktop/AI camp/TGB4"
+git remote add origin https://github.com/ВАШ_ЛОГИН/ИМЯ_РЕПО.git
+git push -u origin main
+```
+
+Если спросит логин и пароль: для GitHub нужен **Personal Access Token** вместо пароля (настройки GitHub → Developer settings → Tokens), либо используйте **GitHub Desktop** и выполните push через приложение.
+
+После успешного `git push` код будет на GitHub.
+
 ## Что создать в Railway
 
-1. **Новый проект** (или существующий) → **New** → **GitHub Repo** и выберите репозиторий с этим кодом, либо **Empty Project** и подключите репоз позже.
-2. **Сервис (Service)** с деплоем из репозитория: Railway подхватит [`Dockerfile`](Dockerfile) и соберёт образ с Chromium.
-3. Во вкладке **Variables** добавьте (названия **точно** как в списке):
+1. [railway.app](https://railway.app) → войти (лучше через **GitHub**).
+2. **New Project** → **Deploy from GitHub repo** → разрешите Railway доступ к репозиториям → выберите репозиторий с этим проектом (например `migraciones-consulta-bot`).
+3. Дождитесь **сборки по Dockerfile** (в логах не должно быть ошибки; образ с Playwright тяжёлый — первая сборка может занять несколько минут).
+4. Дальше по списку ниже: **Variables**, **Domain**, **Cron**.
+5. Во вкладке **Variables** у сервиса добавьте (названия **точно** как в списке):
 
 | Переменная | Обязательно | Описание |
 |------------|-------------|----------|
@@ -33,8 +56,12 @@ npm run check
 | `TELEGRAM_CHAT_ID` | нет | Ваш chat id |
 | `ONLY_NOTIFY_ON_CHANGE` | нет | `1` (по умолчанию) — писать в Telegram только при смене статуса; `0` — при каждом успешном запуске |
 
-4. **Settings** → **Networking** → **Generate Domain**, чтобы был публичный URL.
-5. **Cron** (в том же проекте): **New** → **Cron** → расписание, например `0 14 * * *` (раз в день в 14:00 UTC) → **HTTP Request**: URL вида `https://ВАШ-ДОМЕН.up.railway.app/run?secret=ТОТ_ЖЕ_CRON_SECRET` (метод GET).
+6. **Settings** → **Networking** → **Generate Domain**, чтобы был публичный URL (скопируйте его для шага ниже).
+7. **Cron**: в проекте **New** → **Cron** → расписание, например раз в сутки (`0 14 * * *` = 14:00 UTC) → тип **HTTP Request**, метод **GET**, URL:
+
+   `https://ВАШ-ДОМЕН.up.railway.app/run?secret=ТОТ_ЖЕ_CRON_SECRET`  
+
+   (подставьте домен из шага 6 и **тот же** `CRON_SECRET`, что в Variables).
 
 После первого успешного деплоя откройте **Deployments → View logs**: должна быть строка `Listening on …`.
 
