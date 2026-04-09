@@ -2,20 +2,6 @@ import { chromium } from 'playwright';
 
 const NAV_TIMEOUT_MS = 90_000;
 
-// #region agent log
-function dbgAgent(payload) {
-  fetch('http://127.0.0.1:7930/ingest/676860c0-5942-4424-ad98-27bac9986261', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '775a46' },
-    body: JSON.stringify({
-      sessionId: '775a46',
-      timestamp: Date.now(),
-      ...payload,
-    }),
-  }).catch(() => {});
-}
-// #endregion
-
 /**
  * Evita <input type="hidden" id="info_fecha_nacimiento"> que matcheaba name*=fecha.
  * @param {import('playwright').Page} page
@@ -24,14 +10,6 @@ function dbgAgent(payload) {
 async function fillFechaNacimiento(page, fechaNacimiento) {
   const byId = page.locator('#fecha_nacimiento:not([type="hidden"])');
   if (await byId.count()) {
-    // #region agent log
-    dbgAgent({
-      location: 'consulta.mjs:fillFechaNacimiento',
-      message: 'strategy chosen',
-      hypothesisId: 'H3',
-      data: { strategy: 'id_fecha_nacimiento' },
-    });
-    // #endregion
     await byId.first().fill(fechaNacimiento, { timeout: 15_000 });
     return;
   }
@@ -40,14 +18,6 @@ async function fillFechaNacimiento(page, fechaNacimiento) {
     'input:not([type="hidden"])[name*="fecha" i]:not(#info_fecha_nacimiento)',
   );
   const nameCount = await byName.count();
-  // #region agent log
-  dbgAgent({
-    location: 'consulta.mjs:fillFechaNacimiento',
-    message: 'visible fecha name matches',
-    hypothesisId: 'H1',
-    data: { visibleNameMatchCount: nameCount },
-  });
-  // #endregion
   if (nameCount > 0) {
     await byName.first().fill(fechaNacimiento, { timeout: 15_000 });
     return;
@@ -64,14 +34,6 @@ async function fillFechaNacimiento(page, fechaNacimiento) {
       )
       .first();
     if ((await dia.count()) && (await mes.count()) && (await anio.count())) {
-      // #region agent log
-      dbgAgent({
-        location: 'consulta.mjs:fillFechaNacimiento',
-        message: 'strategy chosen',
-        hypothesisId: 'H2',
-        data: { strategy: 'triple_dia_mes_anio' },
-      });
-      // #endregion
       await dia.fill(dd.padStart(2, '0'), { timeout: 15_000 });
       await mes.fill(mm.padStart(2, '0'), { timeout: 15_000 });
       await anio.fill(yyyy, { timeout: 15_000 });
@@ -85,14 +47,6 @@ async function fillFechaNacimiento(page, fechaNacimiento) {
     if (fid && /^[a-zA-Z_][\w.-]*$/.test(fid) && !/info_fecha/i.test(fid)) {
       const byFor = page.locator(`#${fid}`);
       if ((await byFor.count()) && (await byFor.getAttribute('type')) !== 'hidden') {
-        // #region agent log
-        dbgAgent({
-          location: 'consulta.mjs:fillFechaNacimiento',
-          message: 'strategy chosen',
-          hypothesisId: 'H3',
-          data: { strategy: 'label_for_id' },
-        });
-        // #endregion
         await byFor.fill(fechaNacimiento, { timeout: 15_000 });
         return;
       }
@@ -126,19 +80,6 @@ export async function runConsulta({ consultaUrl, expediente, fechaNacimiento }) 
 
     await page.goto(consultaUrl, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
 
-    // #region agent log
-    const hiddenFechaN = await page.locator('#info_fecha_nacimiento').count();
-    const visibleFechaN = await page
-      .locator('input:not([type="hidden"])[name*="fecha" i]:not(#info_fecha_nacimiento)')
-      .count();
-    dbgAgent({
-      location: 'consulta.mjs:afterGoto',
-      message: 'fecha field probe',
-      hypothesisId: 'H1',
-      data: { hiddenInfoFechaCount: hiddenFechaN, broadVisibleFechaNameCount: visibleFechaN },
-    });
-    // #endregion
-
     const expedienteBox = page.getByLabel(/nro\.?\s*expediente/i).or(page.locator('#numeroDoc'));
     const expCount = await expedienteBox.count();
     if (expCount === 0) {
@@ -163,15 +104,6 @@ export async function runConsulta({ consultaUrl, expediente, fechaNacimiento }) 
 
     const bodyText = await page.locator('body').innerText();
     const block = await extractTramiteBlock(page, bodyText);
-
-    // #region agent log
-    dbgAgent({
-      location: 'consulta.mjs:runConsulta',
-      message: 'consulta completed',
-      hypothesisId: 'H0',
-      data: { ok: true, lineCount: block?.lines?.length ?? 0 },
-    });
-    // #endregion
 
     await context.close();
     return { ok: true, block, rawSnippet: bodyText.slice(0, 8000) };
