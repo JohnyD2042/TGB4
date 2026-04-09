@@ -45,9 +45,15 @@ export async function executeCheck(opts = {}) {
     cfg.telegramChatId &&
     (!cfg.onlyNotifyOnChange || changed || !prev);
 
+  let telegramError = null;
   if (shouldNotify) {
-    await sendTelegram(cfg.telegramBotToken, cfg.telegramChatId, text);
-    notified = true;
+    try {
+      await sendTelegram(cfg.telegramBotToken, cfg.telegramChatId, text);
+      notified = true;
+    } catch (e) {
+      telegramError = e instanceof Error ? e.message : String(e);
+      console.error('[telegram]', telegramError);
+    }
   }
 
   const u = result.block?.ultimoMovimiento;
@@ -60,6 +66,7 @@ export async function executeCheck(opts = {}) {
       ok: true,
       changed,
       notified,
+      telegramError,
       fecha,
       estado,
       texto,
@@ -75,6 +82,7 @@ export async function executeCheck(opts = {}) {
     ok: true,
     changed,
     notified,
+    telegramError,
     fecha,
     estado,
     texto,
