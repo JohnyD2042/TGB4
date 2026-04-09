@@ -45,6 +45,8 @@ export async function executeCheck() {
     ok: true,
     changed,
     notified,
+    resumen: result.block?.resumen ?? '',
+    ultimoMovimiento: result.block?.ultimoMovimiento ?? null,
     fingerprint: fp,
     lines: result.block?.lines ?? [],
     result,
@@ -52,13 +54,16 @@ export async function executeCheck() {
 }
 
 function formatMessage(cfg, result) {
-  const lines = result.block?.lines?.length
-    ? result.block.lines.join('\n')
-    : result.block?.fullTextSample || result.rawSnippet;
+  const block = result.block;
+  const core = block?.resumen
+    ? block.resumen
+    : block?.lines?.length
+      ? block.lines.join('\n')
+      : block?.fullTextSample || result.rawSnippet;
   return [
     'Migraciones — consulta automática',
     `Expediente: ${cfg.expediente}`,
     '---',
-    lines,
+    core,
   ].join('\n');
 }
