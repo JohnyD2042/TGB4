@@ -1,6 +1,7 @@
 import express from 'express';
 import { loadConfig } from './config.mjs';
 import { executeCheck } from './runOnce.mjs';
+import { startInternalCron } from './scheduler.mjs';
 
 const app = express();
 const cfg = loadConfig();
@@ -41,4 +42,5 @@ app.get('/run', async (req, res) => {
 const port = Number(process.env.PORT || 3000);
 app.listen(port, () => {
   console.log(`Listening on ${port}`);
+  startInternalCron();
 });
