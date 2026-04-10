@@ -7,6 +7,14 @@ const root = resolve(__dirname, '..');
 const DEFAULT_URL =
   'https://www.migraciones.gob.ar/accesible/consultaTramitePrecaria/ConsultaUnificada.php';
 
+/** Railway: value is only `0`, not `=0` (если случайно вставили «=», убираем). */
+function onlyNotifyOnChangeFromEnv() {
+  const v = process.env.ONLY_NOTIFY_ON_CHANGE;
+  if (v === undefined) return true;
+  const norm = String(v).trim().replace(/^=\s*/, '');
+  return norm !== '0';
+}
+
 export function loadConfig() {
   const fromEnv = {
     consultaUrl: process.env.CONSULTA_URL?.trim() || DEFAULT_URL,
@@ -15,7 +23,7 @@ export function loadConfig() {
     cronSecret: process.env.CRON_SECRET,
     telegramBotToken: process.env.TELEGRAM_BOT_TOKEN,
     telegramChatId: process.env.TELEGRAM_CHAT_ID,
-    onlyNotifyOnChange: process.env.ONLY_NOTIFY_ON_CHANGE !== '0',
+    onlyNotifyOnChange: onlyNotifyOnChangeFromEnv(),
   };
 
   const configPath = process.env.CONFIG_PATH || resolve(root, 'config.local.json');
@@ -30,7 +38,7 @@ export function loadConfig() {
       telegramChatId: fromEnv.telegramChatId || file.telegramChatId,
       onlyNotifyOnChange:
         process.env.ONLY_NOTIFY_ON_CHANGE !== undefined
-          ? process.env.ONLY_NOTIFY_ON_CHANGE !== '0'
+          ? onlyNotifyOnChangeFromEnv()
           : file.onlyNotifyOnChange !== undefined
             ? Boolean(file.onlyNotifyOnChange)
             : true,
