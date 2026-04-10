@@ -16,8 +16,12 @@ async function runSlot(label) {
     console.log(`[scheduler] ${label}: inicio`);
     const out = await executeCheck({ verbose: false });
     if (out.ok) {
+      const skip =
+        out.notifySkipReason && !out.notified
+          ? ` skip=${out.notifySkipReason}`
+          : '';
       console.log(
-        `[scheduler] ${label}: ok notified=${out.notified} texto=${out.texto || '(vacío)'}`,
+        `[scheduler] ${label}: ok notified=${out.notified} texto=${out.texto || '(vacío)'}${skip}`,
       );
     } else {
       console.error(`[scheduler] ${label}: falló`, out.error);

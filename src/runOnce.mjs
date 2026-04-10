@@ -56,6 +56,16 @@ export async function executeCheck(opts = {}) {
     }
   }
 
+  /** Por qué no hubo Telegram pese a ok (para logs y JSON). */
+  let notifySkipReason = null;
+  if (!shouldNotify && cfg.telegramBotToken && cfg.telegramChatId) {
+    if (cfg.onlyNotifyOnChange && prev && !changed) {
+      notifySkipReason = 'only_notify_on_change_unchanged';
+    }
+  } else if (!shouldNotify && (!cfg.telegramBotToken || !cfg.telegramChatId)) {
+    notifySkipReason = 'telegram_not_configured';
+  }
+
   const u = result.block?.ultimoMovimiento;
   const fecha = u?.fecha ?? '';
   const estado = u?.codigo ?? '';
@@ -66,6 +76,7 @@ export async function executeCheck(opts = {}) {
       ok: true,
       changed,
       notified,
+      notifySkipReason,
       telegramError,
       fecha,
       estado,
@@ -82,6 +93,7 @@ export async function executeCheck(opts = {}) {
     ok: true,
     changed,
     notified,
+    notifySkipReason,
     telegramError,
     fecha,
     estado,
