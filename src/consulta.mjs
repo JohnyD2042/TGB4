@@ -38,12 +38,6 @@ function extractMovimientos(rawLines) {
   return out;
 }
 
-function pickRicherTramiteBlock(a, b) {
-  if (b.movimientos.length > a.movimientos.length) return b;
-  if (a.movimientos.length > b.movimientos.length) return a;
-  return b.lines.length > a.lines.length ? b : a;
-}
-
 /**
  * Reemplaza movimientos del parse por los leídos del DOM (misma metadata de expediente).
  * @param {object} base
@@ -72,11 +66,6 @@ function withMovimientos(base, movimientos) {
   };
 }
 
-/**
- * Lee la cronología real desde el DOM (círculos numerados + fecha), sin regex sobre texto global.
- * @param {import('playwright').Page} page
- * @returns {Promise<{ orden: string, fecha: string, codigo: string }[] | null>}
- */
 function dedupeMovimientosByOrden(movs) {
   const map = new Map();
   for (const m of movs) {
@@ -87,7 +76,114 @@ function dedupeMovimientosByOrden(movs) {
     .map(([, m]) => m);
 }
 
+/**
+ * Valida dd/mm/aaaa (evita falsos positivos del regex sobre el texto global).
+ * @param {string} fecha
+ */
+function fechaEsPlausible(fecha) {
+  const m = fecha.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (!m) return false;
+  const dd = Number(m[1]);
+  const mm = Number(m[2]);
+  return mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31;
+}
+
+/**
+ * Cronología: solo el primer <ul>/<ol> *después* del título "Datos del trámite",
+ * solo <li> hijos directos (no menús ni listas anidadas del mismo panel).
+ * Se ejecuta en el navegador para orden de documento fiable.
+ */
 async function extractMovimientosFromDom(page) {
+  try {
+    const rows = await page.evaluate(() => {
+      function parseLiText(t) {
+        if (!/\d{2}\/\d{2}\/\d{4}/.test(t)) return null;
+        const raw = t
+          .split(/\r?\n/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const joined = raw.join(' ').replace(/\s+/g, ' ');
+        let orden = '';
+        let fecha = '';
+        let codigo = '';
+        let m = joined.match(
+          /^(\d{1,4})\s+(\d{2}\/\d{2}\/\d{4})\s*[:\u2013\-]\s*(.+)$/i,
+        );
+        if (m) {
+          [, orden, fecha, codigo] = m;
+          codigo = codigo.trim();
+        } else {
+          m = joined.match(/^(\d{1,4})(\d{2}\/\d{2}\/\d{4})\s*:\s*(.+)$/);
+          if (m) {
+            [, orden, fecha, codigo] = m;
+            codigo = codigo.trim();
+          } else if (raw.length >= 2) {
+            const ordL = raw[0].match(/^(\d{1,4})$/);
+            const dateL = raw[1].match(/^(\d{2}\/\d{2}\/\d{4})\s*:\s*(.+)$/);
+            if (ordL && dateL) {
+              orden = ordL[1];
+              fecha = dateL[1];
+              codigo = dateL[2].trim();
+            }
+          }
+        }
+        if (!orden || !fecha || !codigo) return null;
+        const n = Number(orden);
+        if (!Number.isFinite(n) || n < 1 || n > 999) return null;
+        return { orden: String(n), fecha, codigo };
+      }
+
+      const reTitulo = /Datos\s+del\s+tr[aá]mite/i;
+      let h = [...document.querySelectorAll('h2, h3, h4, h5, h6')].find((el) =>
+        reTitulo.test(el.textContent || ''),
+      );
+      if (!h) {
+        h = [...document.querySelectorAll('[role="heading"]')].find((el) =>
+          reTitulo.test(el.textContent || ''),
+        );
+      }
+      if (!h) return null;
+
+      const root = h.closest('section') || h.closest('[class*="panel"]') || document.body;
+      const lists = [...root.querySelectorAll('ul, ol')].filter((candidate) => {
+        return h.compareDocumentPosition(candidate) & Node.DOCUMENT_POSITION_FOLLOWING;
+      });
+      lists.sort((l1, l2) => {
+        if (l1 === l2) return 0;
+        return l1.compareDocumentPosition(l2) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+      });
+      if (!lists.length) return null;
+
+      for (const list of lists) {
+        const items = [...list.querySelectorAll(':scope > li')];
+        const out = [];
+        for (const li of items) {
+          const r = parseLiText(li.innerText || '');
+          if (r) out.push(r);
+        }
+        if (out.length > 0) return out;
+      }
+      return null;
+    });
+
+    if (!rows?.length) {
+      return extractMovimientosFromSectionTextFallback(page);
+    }
+    const valid = rows.filter((r) => fechaEsPlausible(r.fecha));
+    if (!valid.length) {
+      return extractMovimientosFromSectionTextFallback(page);
+    }
+    return dedupeMovimientosByOrden(valid);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Último recurso: regex solo sobre el texto plano de la sección (sin body completo).
+ * @param {import('playwright').Page} page
+ */
+async function extractMovimientosFromSectionTextFallback(page) {
   try {
     const heading = page.getByRole('heading', { name: /Datos del trámite/i });
     if (!(await heading.count())) return null;
@@ -95,62 +191,11 @@ async function extractMovimientosFromDom(page) {
       .locator('xpath=ancestor::section[1] | ancestor::div[contains(@class,"panel")][1]')
       .first();
     if (!(await section.count())) return null;
-
-    /** @type {{ orden: string, fecha: string, codigo: string }[]} */
-    let out = [];
-
-    const items = section.locator('li');
-    const n = await items.count();
-    for (let i = 0; i < n; i++) {
-      const el = items.nth(i);
-      const t = await el.innerText();
-      if (!/\d{2}\/\d{2}\/\d{4}/.test(t)) continue;
-
-      const raw = t
-        .split(/\r?\n/)
-        .map((s) => s.trim())
-        .filter(Boolean);
-      const joined = raw.join(' ').replace(/\s+/g, ' ');
-
-      let orden = '';
-      let fecha = '';
-      let codigo = '';
-
-      let m = joined.match(
-        /^(\d{1,4})\s+(\d{2}\/\d{2}\/\d{4})\s*[:\u2013\-]\s*(.+)$/i,
-      );
-      if (m) {
-        [, orden, fecha, codigo] = m;
-        codigo = codigo.trim();
-      } else {
-        m = joined.match(/^(\d{1,4})(\d{2}\/\d{2}\/\d{4})\s*:\s*(.+)$/);
-        if (m) {
-          [, orden, fecha, codigo] = m;
-          codigo = codigo.trim();
-        } else if (raw.length >= 2) {
-          const ordL = raw[0].match(/^(\d{1,4})$/);
-          const dateL = raw[1].match(/^(\d{2}\/\d{2}\/\d{4})\s*:\s*(.+)$/);
-          if (ordL && dateL) {
-            orden = ordL[1];
-            fecha = dateL[1];
-            codigo = dateL[2].trim();
-          }
-        }
-      }
-
-      if (orden && fecha && codigo) {
-        out.push({ orden, fecha, codigo });
-      }
-    }
-
-    if (!out.length) {
-      let st = (await section.innerText()).trim();
-      const mx = st.indexOf('Más Información');
-      if (mx > 0) st = st.slice(0, mx);
-      const rawLines = st.split(/\r?\n/).map((l) => l.trim());
-      out = extractMovimientos(rawLines);
-    }
-
+    let st = (await section.innerText()).trim();
+    const mx = st.indexOf('Más Información');
+    if (mx > 0) st = st.slice(0, mx);
+    const rawLines = st.split(/\r?\n/).map((l) => l.trim());
+    const out = extractMovimientos(rawLines).filter((m) => fechaEsPlausible(m.fecha));
     if (!out.length) return null;
     return dedupeMovimientosByOrden(out);
   } catch {
@@ -417,10 +462,9 @@ async function extractTramiteBlock(page, bodyText) {
 
   if (!rich) return timeline;
   const fromRich = parseDatosTramiteSection(rich);
-  const base = pickRicherTramiteBlock(timeline, fromRich);
-  const other = base === timeline ? fromRich : timeline;
   return {
-    ...base,
-    lines: base.lines.length >= other.lines.length ? base.lines : other.lines,
+    ...timeline,
+    lines:
+      timeline.lines.length >= fromRich.lines.length ? timeline.lines : fromRich.lines,
   };
 }
