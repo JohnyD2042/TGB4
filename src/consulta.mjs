@@ -12,22 +12,24 @@ export function movimientoRowKey(m) {
 }
 
 /**
- * Una línea "16DD/MM/YYYY: código" o dos líneas "16" + "DD/MM/YYYY: código".
+ * Solo formatos no ambiguos (sin "2015/04/2026" → orden 20 + fecha):
+ * - "16 14/04/2026: código" (espacio obligatorio entre nº y fecha)
+ * - dos líneas: "16" y "14/04/2026: código"
  * @param {string[]} rawLines
  */
 function extractMovimientos(rawLines) {
-  const progresoRe = /^(\d+)(\d{2}\/\d{2}\/\d{4}):(.+)$/;
-  const soloFechaCodigo = /^(\d{2}\/\d{2}\/\d{4}):(.+)$/;
+  const conEspacio = /^(\d{1,3})\s+(\d{2}\/\d{2}\/\d{4})\s*[:\u2013\-]\s*(.+)$/;
+  const soloFechaCodigo = /^(\d{2}\/\d{2}\/\d{4})\s*:\s*(.+)$/;
   /** @type {{ orden: string, fecha: string, codigo: string }[]} */
   const out = [];
   for (let i = 0; i < rawLines.length; i++) {
     const line = rawLines[i];
-    const m = line.match(progresoRe);
-    if (m) {
-      out.push({ orden: m[1], fecha: m[2], codigo: m[3].trim() });
+    const sm = line.match(conEspacio);
+    if (sm) {
+      out.push({ orden: sm[1], fecha: sm[2], codigo: sm[3].trim() });
       continue;
     }
-    if (/^\d{1,5}$/.test(line) && i + 1 < rawLines.length) {
+    if (/^\d{1,3}$/.test(line) && i + 1 < rawLines.length) {
       const dm = rawLines[i + 1].match(soloFechaCodigo);
       if (dm) {
         out.push({ orden: line, fecha: dm[1], codigo: dm[2].trim() });
@@ -96,41 +98,38 @@ function fechaEsPlausible(fecha) {
 async function extractMovimientosFromDom(page) {
   try {
     const rows = await page.evaluate(() => {
-      function parseLiText(t) {
-        if (!/\d{2}\/\d{2}\/\d{4}/.test(t)) return null;
-        const raw = t
-          .split(/\r?\n/)
-          .map((s) => s.trim())
-          .filter(Boolean);
-        const joined = raw.join(' ').replace(/\s+/g, ' ');
-        let orden = '';
-        let fecha = '';
-        let codigo = '';
-        let m = joined.match(
-          /^(\d{1,4})\s+(\d{2}\/\d{2}\/\d{4})\s*[:\u2013\-]\s*(.+)$/i,
-        );
-        if (m) {
-          [, orden, fecha, codigo] = m;
-          codigo = codigo.trim();
-        } else {
-          m = joined.match(/^(\d{1,4})(\d{2}\/\d{2}\/\d{4})\s*:\s*(.+)$/);
-          if (m) {
-            [, orden, fecha, codigo] = m;
-            codigo = codigo.trim();
-          } else if (raw.length >= 2) {
-            const ordL = raw[0].match(/^(\d{1,4})$/);
-            const dateL = raw[1].match(/^(\d{2}\/\d{2}\/\d{4})\s*:\s*(.+)$/);
-            if (ordL && dateL) {
-              orden = ordL[1];
-              fecha = dateL[1];
-              codigo = dateL[2].trim();
+      const conEspacio =
+        /^(\d{1,3})\s+(\d{2}\/\d{2}\/\d{4})\s*[:\u2013\-]\s*(.+)$/;
+      const soloFechaCodigo = /^(\d{2}\/\d{2}\/\d{4})\s*:\s*(.+)$/;
+
+      function parseStrictFromLines(lines) {
+        /** @type {{ orden: string, fecha: string, codigo: string }[]} */
+        const out = [];
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          const sm = line.match(conEspacio);
+          if (sm) {
+            out.push({ orden: sm[1], fecha: sm[2], codigo: sm[3].trim() });
+            continue;
+          }
+          if (/^\d{1,3}$/.test(line) && i + 1 < lines.length) {
+            const dm = lines[i + 1].match(soloFechaCodigo);
+            if (dm) {
+              out.push({ orden: line, fecha: dm[1], codigo: dm[2].trim() });
+              i++;
             }
           }
         }
-        if (!orden || !fecha || !codigo) return null;
-        const n = Number(orden);
-        if (!Number.isFinite(n) || n < 1 || n > 999) return null;
-        return { orden: String(n), fecha, codigo };
+        return out;
+      }
+
+      function parseBlockText(t) {
+        if (!/\d{2}\/\d{2}\/\d{4}/.test(t)) return [];
+        const lines = t
+          .split(/\r?\n/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+        return parseStrictFromLines(lines);
       }
 
       const reTitulo = /Datos\s+del\s+tr[aá]mite/i;
@@ -145,6 +144,7 @@ async function extractMovimientosFromDom(page) {
       if (!h) return null;
 
       const root = h.closest('section') || h.closest('[class*="panel"]') || document.body;
+
       const lists = [...root.querySelectorAll('ul, ol')].filter((candidate) => {
         return h.compareDocumentPosition(candidate) & Node.DOCUMENT_POSITION_FOLLOWING;
       });
@@ -152,17 +152,32 @@ async function extractMovimientosFromDom(page) {
         if (l1 === l2) return 0;
         return l1.compareDocumentPosition(l2) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
       });
-      if (!lists.length) return null;
 
       for (const list of lists) {
         const items = [...list.querySelectorAll(':scope > li')];
+        /** @type {{ orden: string, fecha: string, codigo: string }[]} */
         const out = [];
         for (const li of items) {
-          const r = parseLiText(li.innerText || '');
-          if (r) out.push(r);
+          out.push(...parseBlockText(li.innerText || ''));
         }
         if (out.length > 0) return out;
       }
+
+      /** Texto solo entre el título y «Más Información» (misma vista que el usuario). */
+      let blob = '';
+      let sib = h.nextElementSibling;
+      while (sib) {
+        if (/Más\s+Información/i.test(sib.textContent || '')) break;
+        blob += `\n${sib.innerText || ''}`;
+        sib = sib.nextElementSibling;
+      }
+      const blobLines = blob
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const fromSiblings = parseStrictFromLines(blobLines);
+      if (fromSiblings.length) return fromSiblings;
+
       return null;
     });
 
