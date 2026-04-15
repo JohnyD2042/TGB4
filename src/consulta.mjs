@@ -3,6 +3,48 @@ import { chromium } from 'playwright';
 const NAV_TIMEOUT_MS = 90_000;
 
 /**
+ * Clave estable por fila de la cronología (para comparar con el estado guardado).
+ * @param {{ orden: string, fecha: string, codigo: string }} m
+ */
+export function movimientoRowKey(m) {
+  const c = m.codigo.replace(/\s+/g, ' ').trim();
+  return `${String(m.orden)}|${m.fecha}|${c}`;
+}
+
+/**
+ * Una línea "16DD/MM/YYYY: código" o dos líneas "16" + "DD/MM/YYYY: código".
+ * @param {string[]} rawLines
+ */
+function extractMovimientos(rawLines) {
+  const progresoRe = /^(\d+)(\d{2}\/\d{2}\/\d{4}):(.+)$/;
+  const soloFechaCodigo = /^(\d{2}\/\d{2}\/\d{4}):(.+)$/;
+  /** @type {{ orden: string, fecha: string, codigo: string }[]} */
+  const out = [];
+  for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i];
+    const m = line.match(progresoRe);
+    if (m) {
+      out.push({ orden: m[1], fecha: m[2], codigo: m[3].trim() });
+      continue;
+    }
+    if (/^\d{1,5}$/.test(line) && i + 1 < rawLines.length) {
+      const dm = rawLines[i + 1].match(soloFechaCodigo);
+      if (dm) {
+        out.push({ orden: line, fecha: dm[1], codigo: dm[2].trim() });
+        i++;
+      }
+    }
+  }
+  return out;
+}
+
+function pickRicherTramiteBlock(a, b) {
+  if (b.movimientos.length > a.movimientos.length) return b;
+  if (a.movimientos.length > b.movimientos.length) return a;
+  return b.lines.length > a.lines.length ? b : a;
+}
+
+/**
  * Migraciones: bloque #fecha_nac es un <div> con tres <input> (día, mes, año); no usar fill en el div.
  * Evita <input type="hidden" id="info_fecha_nacimiento">.
  * @param {import('playwright').Page} page
@@ -168,13 +210,8 @@ function parseDatosTramiteSection(text) {
 
   const rawLines = slice.split(/\r?\n/).map((l) => l.trim());
 
-  /** @type {{ orden: string, fecha: string, codigo: string }[]} */
-  const movimientos = [];
-  const progresoRe = /^(\d+)(\d{2}\/\d{2}\/\d{4}):(.+)$/;
-  for (const line of rawLines) {
-    const m = line.match(progresoRe);
-    if (m) movimientos.push({ orden: m[1], fecha: m[2], codigo: m[3].trim() });
-  }
+  let movimientos = extractMovimientos(rawLines);
+  movimientos.sort((a, b) => Number(a.orden) - Number(b.orden));
   const ultimoMovimiento = movimientos.length ? movimientos[movimientos.length - 1] : null;
 
   let apellidos = '';
@@ -230,13 +267,9 @@ function parseDatosTramiteSection(text) {
       ? `Estado según expediente: ${estadoSegunExp}`
       : '';
 
+  const chronologySig = movimientos.map(movimientoRowKey).join('||');
   const fingerprint =
-    [
-      estadoSegunExp,
-      ultimoMovimiento && `${ultimoMovimiento.fecha}:${ultimoMovimiento.codigo}`,
-    ]
-      .filter(Boolean)
-      .join('|') || slice.slice(0, 800).trim();
+    [estadoSegunExp, chronologySig].filter(Boolean).join(':::') || slice.slice(0, 800).trim();
 
   return {
     lines: linesOut,
@@ -245,6 +278,7 @@ function parseDatosTramiteSection(text) {
     movimientos,
     ultimoMovimiento,
     resumen,
+    estadoSegunExp,
   };
 }
 
@@ -260,6 +294,13 @@ async function extractTramiteBlock(page, bodyText) {
     /* ignore */
   }
 
-  const source = rich || bodyText;
-  return parseDatosTramiteSection(source);
+  const fromBody = parseDatosTramiteSection(bodyText);
+  if (!rich) return fromBody;
+  const fromRich = parseDatosTramiteSection(rich);
+  const base = pickRicherTramiteBlock(fromBody, fromRich);
+  const other = base === fromBody ? fromRich : fromBody;
+  return {
+    ...base,
+    lines: base.lines.length >= other.lines.length ? base.lines : other.lines,
+  };
 }

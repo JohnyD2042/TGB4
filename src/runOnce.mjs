@@ -1,7 +1,7 @@
 import { loadConfig, validateConsultaConfig } from './config.mjs';
-import { runConsulta } from './consulta.mjs';
+import { movimientoRowKey, runConsulta } from './consulta.mjs';
 import { sendTelegram } from './notify.mjs';
-import { readLastFingerprint, writeLastFingerprint } from './state.mjs';
+import { readTramiteState, writeTramiteState } from './state.mjs';
 
 /**
  * @param {{ verbose?: boolean }} opts – verbose=true devuelve result completo (debug)
@@ -33,17 +33,35 @@ export async function executeCheck(opts = {}) {
     };
   }
 
-  const fp = result.block?.fingerprint || '';
-  const prev = readLastFingerprint();
-  const changed = prev !== fp;
-  writeLastFingerprint(fp);
+  const block = result.block;
+  const estado = block?.estadoSegunExp ?? '';
+  const movs = block?.movimientos ?? [];
+  const keysNow = movs.map(movimientoRowKey);
+
+  const prevState = readTramiteState();
+  const prevSet = new Set(prevState?.rows ?? []);
+  const nuevos = movs.filter((m) => !prevSet.has(movimientoRowKey(m)));
+  nuevos.sort((a, b) => Number(a.orden) - Number(b.orden));
+
+  const firstRun = !prevState;
+  const estadoChanged =
+    Boolean(prevState) && estado !== (prevState.estadoSegunExp ?? '');
+  const tieneNuevos = nuevos.length > 0;
+  const changed = firstRun || tieneNuevos || estadoChanged;
+
+  const fp = block?.fingerprint || '';
+  writeTramiteState({ rows: keysNow, estadoSegunExp: estado });
 
   let notified = false;
-  const text = formatMessage(cfg, result);
+  const text = formatMessage(cfg, result, {
+    nuevos,
+    firstRun,
+    estadoChanged,
+  });
   const shouldNotify =
     cfg.telegramBotToken &&
     cfg.telegramChatId &&
-    (!cfg.onlyNotifyOnChange || changed || !prev);
+    (!cfg.onlyNotifyOnChange || changed);
 
   let telegramError = null;
   if (shouldNotify) {
@@ -59,17 +77,18 @@ export async function executeCheck(opts = {}) {
   /** Por qué no hubo Telegram pese a ok (para logs y JSON). */
   let notifySkipReason = null;
   if (!shouldNotify && cfg.telegramBotToken && cfg.telegramChatId) {
-    if (cfg.onlyNotifyOnChange && prev && !changed) {
+    if (cfg.onlyNotifyOnChange && !changed) {
       notifySkipReason = 'only_notify_on_change_unchanged';
     }
   } else if (!shouldNotify && (!cfg.telegramBotToken || !cfg.telegramChatId)) {
     notifySkipReason = 'telegram_not_configured';
   }
 
-  const u = result.block?.ultimoMovimiento;
+  const u = block?.ultimoMovimiento;
   const fecha = u?.fecha ?? '';
-  const estado = u?.codigo ?? '';
-  const texto = fecha && estado ? `${fecha} — ${estado}` : '';
+  const estadoCodigo = u?.codigo ?? '';
+  const texto =
+    fecha && estadoCodigo ? `${fecha} — ${estadoCodigo}` : '';
 
   if (verbose) {
     return {
@@ -79,12 +98,14 @@ export async function executeCheck(opts = {}) {
       notifySkipReason,
       telegramError,
       fecha,
-      estado,
+      estado: estadoCodigo,
       texto,
       fingerprint: fp,
-      resumen: result.block?.resumen ?? '',
+      resumen: block?.resumen ?? '',
       ultimoMovimiento: u ?? null,
-      lines: result.block?.lines ?? [],
+      nuevos,
+      estadoSegunExp: estado,
+      lines: block?.lines ?? [],
       result,
     };
   }
@@ -96,24 +117,46 @@ export async function executeCheck(opts = {}) {
     notifySkipReason,
     telegramError,
     fecha,
-    estado,
+    estado: estadoCodigo,
     texto,
   };
 }
 
-function formatMessage(cfg, result) {
-  const u = result.block?.ultimoMovimiento;
-  const line =
+function formatMessage(cfg, result, ctx) {
+  const nuevos = ctx?.nuevos ?? [];
+  const firstRun = Boolean(ctx?.firstRun);
+  const estadoChanged = Boolean(ctx?.estadoChanged);
+
+  const block = result.block;
+  const u = block?.ultimoMovimiento;
+  const fallback =
     u && u.fecha && u.codigo
       ? `${u.fecha} — ${u.codigo}`
-      : result.block?.resumen ||
-        (result.block?.lines?.length ? result.block.lines.join('\n') : '') ||
-        result.block?.fullTextSample ||
+      : block?.resumen ||
+        (block?.lines?.length ? block.lines.join('\n') : '') ||
+        block?.fullTextSample ||
         result.rawSnippet;
+
+  let body = '';
+  if (nuevos.length) {
+    const bloque = nuevos.map((m) => `${m.fecha} — ${m.codigo}`).join('\n');
+    if (estadoChanged && block?.estadoSegunExp) {
+      body = `Estado según exp.: ${block.estadoSegunExp}\n---\n${bloque}`;
+    } else {
+      body = bloque;
+    }
+  } else if (firstRun) {
+    body = fallback;
+  } else if (estadoChanged && block?.estadoSegunExp) {
+    body = `Estado según exp.: ${block.estadoSegunExp}`;
+  } else {
+    body = fallback;
+  }
+
   return [
     'Migraciones — consulta automática',
     `Expediente: ${cfg.expediente}`,
     '---',
-    line,
+    body,
   ].join('\n');
 }
