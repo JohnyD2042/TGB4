@@ -45,6 +45,120 @@ function pickRicherTramiteBlock(a, b) {
 }
 
 /**
+ * Reemplaza movimientos del parse por los leídos del DOM (misma metadata de expediente).
+ * @param {object} base
+ * @param {{ orden: string, fecha: string, codigo: string }[]} movimientos
+ */
+function withMovimientos(base, movimientos) {
+  const sorted = [...movimientos].sort((a, b) => Number(a.orden) - Number(b.orden));
+  const ultimo = sorted.length ? sorted[sorted.length - 1] : null;
+  const lines = base.lines.filter((l) => !l.startsWith('Último movimiento (progreso):'));
+  if (ultimo) {
+    lines.push(`Último movimiento (progreso): ${ultimo.fecha} — ${ultimo.codigo}`);
+  }
+  const resumen = ultimo
+    ? `Último paso del trámite: ${ultimo.fecha} — ${ultimo.codigo}`
+    : base.resumen;
+  const chronologySig = sorted.map(movimientoRowKey).join('||');
+  const fingerprint =
+    [base.estadoSegunExp, chronologySig].filter(Boolean).join(':::') || base.fingerprint;
+  return {
+    ...base,
+    lines,
+    movimientos: sorted,
+    ultimoMovimiento: ultimo,
+    resumen,
+    fingerprint,
+  };
+}
+
+/**
+ * Lee la cronología real desde el DOM (círculos numerados + fecha), sin regex sobre texto global.
+ * @param {import('playwright').Page} page
+ * @returns {Promise<{ orden: string, fecha: string, codigo: string }[] | null>}
+ */
+function dedupeMovimientosByOrden(movs) {
+  const map = new Map();
+  for (const m of movs) {
+    map.set(Number(m.orden), m);
+  }
+  return [...map.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, m]) => m);
+}
+
+async function extractMovimientosFromDom(page) {
+  try {
+    const heading = page.getByRole('heading', { name: /Datos del trámite/i });
+    if (!(await heading.count())) return null;
+    const section = heading
+      .locator('xpath=ancestor::section[1] | ancestor::div[contains(@class,"panel")][1]')
+      .first();
+    if (!(await section.count())) return null;
+
+    /** @type {{ orden: string, fecha: string, codigo: string }[]} */
+    let out = [];
+
+    const items = section.locator('li');
+    const n = await items.count();
+    for (let i = 0; i < n; i++) {
+      const el = items.nth(i);
+      const t = await el.innerText();
+      if (!/\d{2}\/\d{2}\/\d{4}/.test(t)) continue;
+
+      const raw = t
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const joined = raw.join(' ').replace(/\s+/g, ' ');
+
+      let orden = '';
+      let fecha = '';
+      let codigo = '';
+
+      let m = joined.match(
+        /^(\d{1,4})\s+(\d{2}\/\d{2}\/\d{4})\s*[:\u2013\-]\s*(.+)$/i,
+      );
+      if (m) {
+        [, orden, fecha, codigo] = m;
+        codigo = codigo.trim();
+      } else {
+        m = joined.match(/^(\d{1,4})(\d{2}\/\d{2}\/\d{4})\s*:\s*(.+)$/);
+        if (m) {
+          [, orden, fecha, codigo] = m;
+          codigo = codigo.trim();
+        } else if (raw.length >= 2) {
+          const ordL = raw[0].match(/^(\d{1,4})$/);
+          const dateL = raw[1].match(/^(\d{2}\/\d{2}\/\d{4})\s*:\s*(.+)$/);
+          if (ordL && dateL) {
+            orden = ordL[1];
+            fecha = dateL[1];
+            codigo = dateL[2].trim();
+          }
+        }
+      }
+
+      if (orden && fecha && codigo) {
+        out.push({ orden, fecha, codigo });
+      }
+    }
+
+    if (!out.length) {
+      let st = (await section.innerText()).trim();
+      const mx = st.indexOf('Más Información');
+      if (mx > 0) st = st.slice(0, mx);
+      const rawLines = st.split(/\r?\n/).map((l) => l.trim());
+      out = extractMovimientos(rawLines);
+    }
+
+    if (!out.length) return null;
+    return dedupeMovimientosByOrden(out);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Migraciones: bloque #fecha_nac es un <div> con tres <input> (día, mes, año); no usar fill en el div.
  * Evita <input type="hidden" id="info_fecha_nacimiento">.
  * @param {import('playwright').Page} page
@@ -295,10 +409,16 @@ async function extractTramiteBlock(page, bodyText) {
   }
 
   const fromBody = parseDatosTramiteSection(bodyText);
-  if (!rich) return fromBody;
+  const domMovs = await extractMovimientosFromDom(page);
+  let timeline = fromBody;
+  if (domMovs?.length) {
+    timeline = withMovimientos(fromBody, domMovs);
+  }
+
+  if (!rich) return timeline;
   const fromRich = parseDatosTramiteSection(rich);
-  const base = pickRicherTramiteBlock(fromBody, fromRich);
-  const other = base === fromBody ? fromRich : fromBody;
+  const base = pickRicherTramiteBlock(timeline, fromRich);
+  const other = base === timeline ? fromRich : timeline;
   return {
     ...base,
     lines: base.lines.length >= other.lines.length ? base.lines : other.lines,
