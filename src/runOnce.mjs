@@ -53,11 +53,7 @@ export async function executeCheck(opts = {}) {
   writeTramiteState({ rows: keysNow, estadoSegunExp: estado });
 
   let notified = false;
-  const text = formatMessage(cfg, result, {
-    nuevos,
-    firstRun,
-    estadoChanged,
-  });
+  const text = formatMessage(cfg, result, { estadoChanged });
   const shouldNotify =
     cfg.telegramBotToken &&
     cfg.telegramChatId &&
@@ -87,8 +83,12 @@ export async function executeCheck(opts = {}) {
   const u = block?.ultimoMovimiento;
   const fecha = u?.fecha ?? '';
   const estadoCodigo = u?.codigo ?? '';
-  const texto =
-    fecha && estadoCodigo ? `${fecha} — ${estadoCodigo}` : '';
+  const ventana3 = lastTimelineWindow(movs, 3);
+  const texto = ventana3.length
+    ? ventana3.map((m) => `${m.fecha} — ${m.codigo}`).join(' | ')
+    : fecha && estadoCodigo
+      ? `${fecha} — ${estadoCodigo}`
+      : '';
 
   if (verbose) {
     return {
@@ -104,6 +104,7 @@ export async function executeCheck(opts = {}) {
       resumen: block?.resumen ?? '',
       ultimoMovimiento: u ?? null,
       nuevos,
+      ultimosTres: ventana3,
       estadoSegunExp: estado,
       lines: block?.lines ?? [],
       result,
@@ -122,9 +123,19 @@ export async function executeCheck(opts = {}) {
   };
 }
 
+/**
+ * Últimos k pasos del timeline (números en círculos), ordenados por `orden`.
+ * Si hay 18 pasos y k=3 → devuelve los movimientos #16, #17, #18.
+ * @param {{ orden: string, fecha: string, codigo: string }[]} movimientos
+ * @param {number} k
+ */
+function lastTimelineWindow(movimientos, k) {
+  if (!movimientos?.length || k < 1) return [];
+  const sorted = [...movimientos].sort((a, b) => Number(a.orden) - Number(b.orden));
+  return sorted.slice(-k);
+}
+
 function formatMessage(cfg, result, ctx) {
-  const nuevos = ctx?.nuevos ?? [];
-  const firstRun = Boolean(ctx?.firstRun);
   const estadoChanged = Boolean(ctx?.estadoChanged);
 
   const block = result.block;
@@ -137,20 +148,16 @@ function formatMessage(cfg, result, ctx) {
         block?.fullTextSample ||
         result.rawSnippet;
 
+  const ventana = lastTimelineWindow(block?.movimientos, 3);
   let body = '';
-  if (nuevos.length) {
-    const bloque = nuevos.map((m) => `${m.fecha} — ${m.codigo}`).join('\n');
-    if (estadoChanged && block?.estadoSegunExp) {
-      body = `Estado según exp.: ${block.estadoSegunExp}\n---\n${bloque}`;
-    } else {
-      body = bloque;
-    }
-  } else if (firstRun) {
-    body = fallback;
-  } else if (estadoChanged && block?.estadoSegunExp) {
-    body = `Estado según exp.: ${block.estadoSegunExp}`;
+  if (ventana.length) {
+    body = ventana.map((m) => `#${m.orden} ${m.fecha} — ${m.codigo}`).join('\n');
   } else {
     body = fallback;
+  }
+
+  if (estadoChanged && block?.estadoSegunExp) {
+    body = `Estado según exp.: ${block.estadoSegunExp}\n---\n${body}`;
   }
 
   return [
