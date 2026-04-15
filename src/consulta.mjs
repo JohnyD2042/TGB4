@@ -34,10 +34,15 @@ function extractMovimientos(rawLines) {
       if (dm) {
         out.push({ orden: line, fecha: dm[1], codigo: dm[2].trim() });
         i++;
+        continue;
       }
     }
+    const glued = parseGluedProgresoLine(line);
+    if (glued) {
+      out.push(glued);
+    }
   }
-  return out;
+  return dedupeMovimientosByOrden(out);
 }
 
 /**
@@ -91,6 +96,31 @@ function fechaEsPlausible(fecha) {
 }
 
 /**
+ * Fila pegada "110/04/2023:EXPEDIENTE..." (paso 1 + 10/04/2023) — común en Migraciones.
+ * Prueba prefijos de 3, 2 y 1 dígitos; el más largo que deje dd/mm/aaaa válido gana.
+ * @param {string} line
+ */
+function parseGluedProgresoLine(line) {
+  const s = line.trim();
+  if (s.length < 12 || !/^\d/.test(s) || !/\d{2}\/\d{2}\/\d{4}/.test(s)) return null;
+  for (let len = 3; len >= 1; len--) {
+    if (len >= s.length) continue;
+    const prefix = s.slice(0, len);
+    if (!/^\d+$/.test(prefix)) continue;
+    const rem = s.slice(len);
+    const m = rem.match(/^(\d{2}\/\d{2}\/\d{4})\s*:\s*(.+)$/);
+    if (!m) continue;
+    if (!fechaEsPlausible(m[1])) continue;
+    return {
+      orden: String(Number(prefix)),
+      fecha: m[1],
+      codigo: m[2].trim(),
+    };
+  }
+  return null;
+}
+
+/**
  * Cronología: solo el primer <ul>/<ol> *después* del título "Datos del trámite",
  * solo <li> hijos directos (no menús ni listas anidadas del mismo panel).
  * Se ejecuta en el navegador para orden de documento fiable.
@@ -102,25 +132,62 @@ async function extractMovimientosFromDom(page) {
         /^(\d{1,3})\s+(\d{2}\/\d{2}\/\d{4})\s*[:\u2013\-]\s*(.+)$/;
       const soloFechaCodigo = /^(\d{2}\/\d{2}\/\d{4})\s*:\s*(.+)$/;
 
+      function fechaOk(fecha) {
+        const m = fecha.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+        if (!m) return false;
+        const dd = Number(m[1]);
+        const mm = Number(m[2]);
+        return mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31;
+      }
+
+      function parseGluedLine(line) {
+        const s = line.trim();
+        if (s.length < 12 || !/^\d/.test(s) || !/\d{2}\/\d{2}\/\d{4}/.test(s)) return null;
+        for (let len = 3; len >= 1; len--) {
+          if (len >= s.length) continue;
+          const prefix = s.slice(0, len);
+          if (!/^\d+$/.test(prefix)) continue;
+          const rem = s.slice(len);
+          const m = rem.match(/^(\d{2}\/\d{2}\/\d{4})\s*:\s*(.+)$/);
+          if (!m || !fechaOk(m[1])) continue;
+          return {
+            orden: String(Number(prefix)),
+            fecha: m[1],
+            codigo: m[2].trim(),
+          };
+        }
+        return null;
+      }
+
       function parseStrictFromLines(lines) {
         /** @type {{ orden: string, fecha: string, codigo: string }[]} */
         const out = [];
+        const seen = new Map();
+        function add(row) {
+          const k = Number(row.orden);
+          seen.set(k, row);
+        }
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
           const sm = line.match(conEspacio);
           if (sm) {
-            out.push({ orden: sm[1], fecha: sm[2], codigo: sm[3].trim() });
+            add({ orden: sm[1], fecha: sm[2], codigo: sm[3].trim() });
             continue;
           }
           if (/^\d{1,3}$/.test(line) && i + 1 < lines.length) {
             const dm = lines[i + 1].match(soloFechaCodigo);
             if (dm) {
-              out.push({ orden: line, fecha: dm[1], codigo: dm[2].trim() });
+              add({ orden: line, fecha: dm[1], codigo: dm[2].trim() });
               i++;
+              continue;
             }
           }
+          const glued = parseGluedLine(line);
+          if (glued) add(glued);
         }
-        return out;
+        return [...seen.entries()]
+          .sort((a, b) => a[0] - b[0])
+          .map(([, r]) => r);
       }
 
       function parseBlockText(t) {

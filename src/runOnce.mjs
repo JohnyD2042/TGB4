@@ -140,20 +140,16 @@ function formatMessage(cfg, result, ctx) {
 
   const block = result.block;
   const u = block?.ultimoMovimiento;
-  const fallback =
-    u && u.fecha && u.codigo
-      ? `${u.fecha} — ${u.codigo}`
-      : block?.resumen ||
-        (block?.lines?.length ? block.lines.join('\n') : '') ||
-        block?.fullTextSample ||
-        result.rawSnippet;
 
   const ventana = lastTimelineWindow(block?.movimientos, 3);
   let body = '';
   if (ventana.length) {
     body = ventana.map((m) => `#${m.orden} ${m.fecha} — ${m.codigo}`).join('\n');
+  } else if (u && u.fecha && u.codigo) {
+    body = `#${u.orden} ${u.fecha} — ${u.codigo}`;
   } else {
-    body = fallback;
+    body =
+      'No se pudieron leer los últimos pasos del trámite. Revisá la consulta en el sitio de Migraciones.';
   }
 
   if (estadoChanged && block?.estadoSegunExp) {
